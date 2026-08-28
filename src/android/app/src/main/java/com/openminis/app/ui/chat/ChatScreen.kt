@@ -259,6 +259,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.openminis.app.offload.OffloadPermissionManager
+import com.openminis.app.speech.RawAudioRecorder
 import com.mikepenz.markdown.compose.components.markdownComponents
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
@@ -699,6 +700,58 @@ fun ChatScreen(
     val swipeHaptics = androidx.compose.ui.platform.LocalHapticFeedback.current
 
     val coroutineScope = rememberCoroutineScope()
+
+    // Raw audio attachment mode: the composer microphone's normal tap records
+    // a WAV file instead of routing through SpeechRecognizer. The long-press
+    // path below still opens the existing text-transcription voice panel.
+    val rawAudioRecorder = remember { RawAudioRecorder(context) }
+    var rawAudioRecording by remember { mutableStateOf(false) }
+    DisposableEffect(rawAudioRecorder) {
+        onDispose {
+            if (rawAudioRecorder.isRecording) rawAudioRecorder.cancel()
+        }
+    }
+    val toggleRawAudio: () -> Unit = {
+        coroutineScope.launch {
+            if (rawAudioRecording) {
+                val file = rawAudioRecorder.stop()
+                rawAudioRecording = false
+                if (file != null) {
+                    viewModel.addAttachment(
+                        InputAttachment(
+                            fileName = file.name,
+                            uri = Uri.fromFile(file),
+                            mimeType = "audio/wav",
+                            kind = InputAttachment.Kind.DOCUMENT,
+                        ),
+                    )
+                    android.widget.Toast.makeText(
+                        context,
+                        "音频已添加，点击发送提交",
+                        android.widget.Toast.LENGTH_SHORT,
+                    ).show()
+                } else {
+                    android.widget.Toast.makeText(
+                        context,
+                        "录音为空或录音失败",
+                        android.widget.Toast.LENGTH_SHORT,
+                    ).show()
+                }
+                return@launch
+            }
+            if (!ensureMicPermissionFlow()) return@launch
+            runCatching { rawAudioRecorder.start() }
+                .onSuccess { rawAudioRecording = true }
+                .onFailure { error ->
+                    rawAudioRecording = false
+                    android.widget.Toast.makeText(
+                        context,
+                        "无法开始录音：${error.message ?: "麦克风不可用"}",
+                        android.widget.Toast.LENGTH_SHORT,
+                    ).show()
+                }
+        }
+    }
 
     var showModelPicker by remember { mutableStateOf(false) }
     // [T-android-thinking-badge-navbar] Whether the thinking-level sheet
@@ -5842,12 +5895,23 @@ fun ChatScreen(
                         // removing the control.
                         if (com.openminis.app.speech.SpeechRecognitionManager.hasMicrophoneHardware) {
                             MicButton(
-                                isRecording = !com.openminis.app.ui.chat.voice.VoiceModePrefs.isVoiceActive &&
-                                    (sttState == com.openminis.app.speech.RecognitionState.RECORDING ||
-                                        sttState == com.openminis.app.speech.RecognitionState.STARTING),
+                                // Normal tap = raw audio attachment (B mode).
+                                // Long-press = existing speech-to-text panel.
+                                isRecording = rawAudioRecording ||
+                                    (!com.openminis.app.ui.chat.voice.VoiceModePrefs.isVoiceActive &&
+                                        (sttState == com.openminis.app.speech.RecognitionState.RECORDING ||
+                                            sttState == com.openminis.app.speech.RecognitionState.STARTING)),
                                 localeBadge = null,
-                                onClick = { triggerVoiceInput() },
-                                onLongClick = { showLangSheet = true },
+                                onClick = {
+                                    if (com.openminis.app.ui.chat.voice.VoiceModePrefs.isVoiceActive) {
+                                        triggerVoiceInput()
+                                    } else {
+                                        toggleRawAudio()
+                                    }
+                                },
+                                onLongClick = {
+                                    if (!rawAudioRecording) triggerVoiceInput()
+                                },
                                 isVoiceActive = com.openminis.app.ui.chat.voice.VoiceModePrefs.isVoiceActive,
                             )
                         }

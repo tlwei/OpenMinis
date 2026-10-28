@@ -1,0 +1,109 @@
+name: OpenMinis raw-audio Android APK
+
+on:
+  push:
+    branches: [ raw-audio-1.15 ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ANDROID_NDK_VERSION: 28.0.13004108
+  ANDROID_CMAKE_VERSION: 3.22.1
+  GO_VERSION: "1.25"
+
+jobs:
+  build-raw-audio:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout raw-audio branch
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK, NDK and CMake
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;35.0.0" "ndk;${ANDROID_NDK_VERSION}" "cmake;${ANDROID_CMAKE_VERSION}"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Install native build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang cmake ninja-build curl tar sed unzip zip pkg-config python3
+
+      - name: Create customization file
+        run: cp src/android/app/provider-customization.properties.example src/android/app/provider-customization.properties
+
+      - name: Install fixed raw-audio debug keystore
+        env:
+          OPENMINIS_DEBUG_KEYSTORE: ${{ secrets.OPENMINIS_DEBUG_KEYSTORE }}
+        shell: bash
+        run: |
+          mkdir -p ~/.android
+          if [ -z "$OPENMINIS_DEBUG_KEYSTORE" ]; then
+            echo "OPENMINIS_DEBUG_KEYSTORE is required for an upgrade-compatible raw-audio APK"
+            exit 1
+          fi
+          printf '%s' "$OPENMINIS_DEBUG_KEYSTORE" | base64 --decode > ~/.android/debug.keystore
+          test -s ~/.android/debug.keystore
+          echo "Using repository fixed debug keystore"
+
+      - name: Build rclone.aar
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
+          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          gomobile init
+          mkdir -p src/android/app/libs
+          ./deps/build_rclone_android.sh
+          cp deps/build/rclone/rclone.aar src/android/app/libs/rclone.aar
+
+      - name: Build PRoot and sandbox assets
+        run: |
+          ./deps/build_proot.sh
+          ./scripts/prepare_android_sandbox.sh
+
+      - name: Assemble raw-audio debug APK
+        working-directory: src/android
+        run: ./gradlew --no-daemon :app:assembleDebug
+
+      - name: Verify APK metadata and digest
+        shell: bash
+        run: |
+          apk=$(find src/android/app/build/outputs/apk -type f -name '*.apk' | head -1)
+          test -n "$apk"
+          sha256sum "$apk" | tee "$apk.sha256"
+          unzip -p "$apk" AndroidManifest.xml >/dev/null
+          echo "APK=$apk"
+
+      - name: Upload raw-audio APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenMinis-raw-audio-1.15-arm64-debug
+          retention-days: 14
+          path: |
+            src/android/app/build/outputs/apk/**/*.apk
+            src/android/app/build/outputs/apk/**/*.sha256

@@ -1,0 +1,50 @@
+name: Publish raw-audio APK direct download
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Download successful build artifact inside GitHub
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 40641837850
+          artifact-ids: 12796421297
+          path: dist
+
+      - name: Prepare APK and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk=$(find dist -type f -name '*.apk' | head -1)
+          test -n "$apk"
+          cp "$apk" dist/OpenMinis-raw-audio-1.15-arm64-debug.apk
+          sha256sum dist/OpenMinis-raw-audio-1.15-arm64-debug.apk | tee dist/OpenMinis-raw-audio-1.15-arm64-debug.apk.sha256
+
+      - name: Publish direct APK release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: raw-audio-1.15-build37
+          name: OpenMinis raw-audio 1.15 build 37
+          body: |
+            Raw-audio Android 1.15 build 37.
+
+            Package: com.openminis.app.rawaudio
+            ABI: arm64-v8a
+            Built from commit 3f3cb1d361da6967c944df351d0b299cfb2d316f.
+          prerelease: true
+          make_latest: false
+          files: |
+            dist/OpenMinis-raw-audio-1.15-arm64-debug.apk
+            dist/OpenMinis-raw-audio-1.15-arm64-debug.apk.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

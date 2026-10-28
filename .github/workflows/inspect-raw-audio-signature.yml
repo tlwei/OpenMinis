@@ -1,0 +1,52 @@
+name: Inspect raw-audio APK signature
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Download successful raw-audio artifact
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 40641837850
+          artifact-ids: 12796421297
+          path: dist
+
+      - name: Print APK package and signing certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk=$(find dist -type f -name '*.apk' -print -quit)
+          test -n "$apk"
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          apksigner=$(find "$sdk_root/build-tools" -type f -name apksigner | sort -V | tail -1)
+          aapt=$(find "$sdk_root/build-tools" -type f -name aapt | sort -V | tail -1)
+          test -x "$apksigner"
+          report=signature-report.txt
+          {
+            echo "APK_FILE=$(basename "$apk")"
+            echo "APK_SIZE=$(stat -c '%s' "$apk")"
+            sha256sum "$apk"
+            echo
+            echo "PACKAGE_AND_ABI"
+            "$aapt" dump badging "$apk" | grep -E '^(package:|native-code:)'
+            echo
+            echo "SIGNATURE"
+            "$apksigner" verify --verbose --print-certs "$apk"
+          } | tee "$report"
+
+      - name: Upload signature report
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-audio-1.15-signature-report
+          retention-days: 14
+          path: signature-report.txt
